@@ -9,6 +9,7 @@ use crate::expression_tree::{BindingExpression, Expression, NamedReference};
 use crate::langtype::Type;
 use crate::object_tree::{self, Component, Element, ElementRc};
 use crate::typeregister::TypeRegister;
+use smol_str::{format_smolstr, ToSmolStr};
 use std::rc::Rc;
 
 /// If any element in `component` declares a binding to `property_name`, then a new
@@ -35,7 +36,7 @@ pub(crate) fn lower_property_to_element(
     }
 
     object_tree::recurse_elem_including_sub_components_no_borrow(component, &(), &mut |elem, _| {
-        if elem.borrow().base_type.to_string() == element_name {
+        if elem.borrow().base_type.to_smolstr() == element_name {
             return;
         }
 
@@ -108,12 +109,12 @@ fn create_property_element(
                     bind.expression = default_value_for_extra_properties(child, property_name)
                 }
             }
-            (property_name.to_string(), bind.into())
+            (property_name.into(), bind.into())
         })
         .collect();
 
     let element = Element {
-        id: format!("{}-{}", child.borrow().id, property_name),
+        id: format_smolstr!("{}-{}", child.borrow().id, property_name),
         base_type: type_register.lookup_element(element_name).unwrap(),
         enclosing_component: child.borrow().enclosing_component.clone(),
         bindings,
