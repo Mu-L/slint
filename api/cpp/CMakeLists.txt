@@ -374,10 +374,6 @@ if (SLINT_BUILD_RUNTIME)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/SlintMacro.cmake)
     endif()
 
-    if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm)$")
-        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/slint-stm.h DESTINATION include/slint)
-    endif()
-
     export(TARGETS Slint slint_cpp
         NAMESPACE Slint:: FILE "${CMAKE_BINARY_DIR}/lib/cmake/Slint/SlintTargets.cmake")
     install(EXPORT SlintTargets NAMESPACE Slint:: DESTINATION lib/cmake/Slint)
@@ -444,7 +440,7 @@ if(SLINT_BUILD_RUNTIME)
     write_basic_package_version_file(
         ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Slint/SlintConfigVersion.cmake
         VERSION ${PROJECT_VERSION}
-        COMPATIBILITY SameMinorVersion
+        COMPATIBILITY SameMajorVersion
     )
 
     install(FILES

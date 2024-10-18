@@ -1,6 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+use smol_str::{SmolStr, ToSmolStr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -42,9 +43,9 @@ pub struct ImportedTypes {
 #[derive(Debug)]
 pub struct ImportedName {
     // name of export to match in the other file
-    pub external_name: String,
+    pub external_name: SmolStr,
     // name to be used locally
-    pub internal_name: String,
+    pub internal_name: SmolStr,
 }
 
 impl ImportedName {
@@ -58,10 +59,10 @@ impl ImportedName {
 
     pub fn from_node(importident: syntax_nodes::ImportIdentifier) -> Self {
         let external_name =
-            parser::normalize_identifier(importident.ExternalName().text().to_string().trim());
+            parser::normalize_identifier(importident.ExternalName().text().to_smolstr().trim());
 
         let internal_name = match importident.InternalName() {
-            Some(name_ident) => parser::normalize_identifier(name_ident.text().to_string().trim()),
+            Some(name_ident) => parser::normalize_identifier(name_ident.text().to_smolstr().trim()),
             None => external_name.clone(),
         };
 
@@ -1051,7 +1052,25 @@ impl TypeLoader {
             .tl
             .resolve_import_path(import_token.as_ref(), file_to_import)
         {
-            Some(x) => x,
+            Some(x) => {
+                if let Some(file_name) = x.0.file_name().and_then(|f| f.to_str()) {
+                    let len = file_to_import.len();
+                    if !file_to_import.ends_with(file_name)
+                        && len >= file_name.len()
+                        && file_name.eq_ignore_ascii_case(
+                            &file_to_import.get(len - file_name.len()..).unwrap_or(""),
+                        )
+                    {
+                        if import_token.as_ref().and_then(|x| x.source_file()).is_some() {
+                            borrowed_state.diag.push_warning(
+                                format!("Loading \"{file_to_import}\" resolved to a file named \"{file_name}\" with different casing. This behavior is not cross platform. Rename the file, or edit the import to use the same casing"),
+                                &import_token,
+                            );
+                        }
+                    }
+                }
+                x
+            }
             None => {
                 let import_path = crate::pathutils::clean_path(Path::new(file_to_import));
                 if import_path.exists() {
