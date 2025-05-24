@@ -11,7 +11,7 @@
 This crate is the main entry point for embedding user interfaces designed with
 [Slint](https://slint.rs/) in Rust programs.
 */
-#![doc = i_slint_core_macros::slint_doc_str!("If you are new to Slint, start with the [Walk-through **tutorial**](slint:quickstart)")]
+#![doc = i_slint_core_macros::slint_doc_str!("If you are new to Slint, start with the [Walk-through **tutorial**](slint:quickstart).")]
 /*! If you are already familiar with Slint, the following topics provide related information.
 
 ## Topics
@@ -200,6 +200,9 @@ each instance will have their own instance of associated globals singletons.
 #![doc(html_logo_url = "https://slint.dev/logo/slint-logo-square-light.svg")]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::needless_doctest_main)] // We document how to write a main function
+
+#[cfg(target_env = "musl")]
+compile_error!("Compiling with MUSL is not supported by this crate.");
 
 extern crate alloc;
 

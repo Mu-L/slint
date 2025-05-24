@@ -16,7 +16,11 @@ use slint::{SharedString, VecModel};
 
 use crate::{
     common,
-    preview::{properties, ui},
+    preview::ui::{
+        self,
+        brushes::{color_to_string, create_brush, string_to_color},
+    },
+    preview::{self, properties},
     util,
 };
 
@@ -179,17 +183,44 @@ fn convert_number_literal(
 }
 
 fn extract_color(
-    expression: &syntax_nodes::Expression,
+    expression: &Option<syntax_nodes::Expression>,
+    evaluated_expression: &Option<expression_tree::Expression>,
     kind: ui::PropertyValueKind,
     value: &mut ui::PropertyValue,
 ) -> bool {
-    if let Some(text) = expression.child_text(SyntaxKind::ColorLiteral) {
-        if let Some(color) = ui::string_to_color(&text) {
-            value.display_string = text.as_str().into();
+    if let Some(expression) = expression {
+        if expression.children_with_tokens().any(|child| {
+            ![SyntaxKind::QualifiedName, SyntaxKind::ColorLiteral].contains(&child.kind())
+        }) {
+            return false;
+        }
+    }
+    if let Some(ev) = evaluated_expression {
+        if let Some(slint_interpreter::Value::Brush(b)) =
+            preview::eval::fully_eval_expression_tree_expression(ev)
+        {
+            let color_string = color_to_string(b.color());
+            let expression_string = expression
+                .as_ref()
+                .map(|e| SharedString::from(e.text().to_string().trim()))
+                .unwrap_or_else(|| color_string.clone());
+            let value_string = if expression
+                .as_ref()
+                .and_then(|e| e.child_node(SyntaxKind::QualifiedName))
+                .is_some()
+            {
+                expression_string.clone()
+            } else {
+                SharedString::new()
+            };
+
+            value.display_string = expression_string;
             value.kind = kind;
-            value.value_brush = slint::Brush::SolidColor(color);
+            value.value_brush = b.clone();
+            value.value_string = value_string;
             value.gradient_stops =
-                Rc::new(VecModel::from(vec![ui::GradientStop { color, position: 0.5 }])).into();
+                Rc::new(VecModel::from(vec![ui::GradientStop { color: b.color(), position: 0.5 }]))
+                    .into();
             return true;
         }
     }
@@ -214,7 +245,7 @@ fn set_default_brush(
     }
     value.brush_kind = ui::BrushKind::Solid;
     let text = "#00000000";
-    let color = ui::string_to_color(text).unwrap();
+    let color = string_to_color(text).unwrap();
     value.gradient_stops =
         Rc::new(VecModel::from(vec![ui::GradientStop { color, position: 0.5 }])).into();
     value.display_string = text.into();
@@ -332,24 +363,6 @@ fn extract_number_from_expression_tree(
     }
 }
 
-fn extract_color_from_expression_tree(
-    expression: &expression_tree::Expression,
-) -> Option<slint::Color> {
-    match expression {
-        expression_tree::Expression::NumberLiteral(v, _) => {
-            Some(slint::Color::from_argb_encoded(*v as u32))
-        }
-        expression_tree::Expression::Cast { from, to } => {
-            if *to == langtype::Type::Color {
-                extract_color_from_expression_tree(from.as_ref())
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 fn extract_gradient(
     document_cache: &common::DocumentCache,
     expression: &syntax_nodes::AtGradient,
@@ -373,10 +386,16 @@ fn extract_gradient(
         stops
             .iter()
             .filter_map(|(c, p)| {
-                Some(ui::GradientStop {
-                    color: extract_color_from_expression_tree(c)?,
-                    position: extract_number_from_expression_tree(p)?.normalized_value as f32,
-                })
+                if let slint_interpreter::Value::Brush(b) =
+                    preview::eval::fully_eval_expression_tree_expression(c)?
+                {
+                    Some(ui::GradientStop {
+                        color: b.color(),
+                        position: extract_number_from_expression_tree(p)?.normalized_value as f32,
+                    })
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>()
     }
@@ -400,7 +419,7 @@ fn extract_gradient(
     };
 
     value.gradient_stops = Rc::new(VecModel::from(stops)).into();
-    value.value_brush = super::create_brush(
+    value.value_brush = create_brush(
         value.brush_kind,
         value.value_float,
         slint::Color::default(),
@@ -419,6 +438,11 @@ fn simplify_value(
     let code_block_or_expression =
         prop_info.defined_at.as_ref().map(|da| da.code_block_or_expression.clone());
     let expression = code_block_or_expression.as_ref().and_then(|cbe| cbe.expression());
+
+    let eval_result = expression
+        .as_ref()
+        .and_then(|e| e.parent())
+        .and_then(|e| crate::preview::eval::eval_binding_expression(document_cache, e.into()));
 
     let mut value = ui::PropertyValue {
         code: code_block_or_expression
@@ -466,11 +490,8 @@ fn simplify_value(
             }
         }
         Type::Color => {
-            if let Some(expression) = expression {
-                extract_color(&expression, ui::PropertyValueKind::Color, &mut value);
-                // TODO: Extract `Foo.bar` as Palette `Foo`, entry `bar`.
-                // This makes no sense right now, as we have no way to get any
-                // information on the palettes.
+            if expression.is_some() {
+                extract_color(&expression, &eval_result, ui::PropertyValueKind::Color, &mut value);
             } else if value.code.is_empty() {
                 set_default_brush(ui::PropertyValueKind::Color, def_val, &mut value);
             }
@@ -480,7 +501,12 @@ fn simplify_value(
                 if let Some(gradient) = expression.AtGradient() {
                     extract_gradient(document_cache, &gradient, &mut value);
                 } else {
-                    extract_color(&expression, ui::PropertyValueKind::Brush, &mut value);
+                    extract_color(
+                        &Some(expression),
+                        &eval_result,
+                        ui::PropertyValueKind::Brush,
+                        &mut value,
+                    );
                 }
             } else if value.code.is_empty() {
                 set_default_brush(ui::PropertyValueKind::Brush, def_val, &mut value);
@@ -639,7 +665,16 @@ mod tests {
         common::DocumentCache,
         lsp_types::Url,
     )> {
-        let (dc, url, _) = loaded_document_cache(source.to_string());
+        let (dc, url, diag) = loaded_document_cache(source.to_string());
+        for (u, diag) in diag.iter() {
+            if diag.is_empty() {
+                continue;
+            }
+            eprintln!("Diags for {u}");
+            for d in diag {
+                eprintln!("{d:#?}");
+            }
+        }
         if let Some((e, p)) =
             properties::tests::properties_at_position_in_cache(line, character, &dc, &url)
         {
@@ -650,6 +685,7 @@ mod tests {
     }
 
     fn property_conversion_test(contents: &str, property_line: u32) -> ui::PropertyValue {
+        eprintln!("\n\n\n{contents}:");
         let (_, pi, dc, _) = properties_at_position(contents, property_line, 30).unwrap();
         let test1 = pi.iter().find(|pi| pi.name == "test1").unwrap();
         super::simplify_value(&dc, test1)
@@ -957,6 +993,7 @@ export component Test { in property <Foobar> test1; }"#,
             property_conversion_test(r#"export component Test { in property <color> test1; }"#, 0);
         assert_eq!(result.kind, ui::PropertyValueKind::Color);
         assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert!(result.value_string.is_empty());
         assert_eq!(result.value_brush.color().red(), 0);
         assert_eq!(result.value_brush.color().green(), 0);
         assert_eq!(result.value_brush.color().blue(), 0);
@@ -968,6 +1005,7 @@ export component Test { in property <Foobar> test1; }"#,
         );
         assert_eq!(result.kind, ui::PropertyValueKind::Color);
         assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert!(result.value_string.is_empty());
         assert_eq!(result.value_brush.color().red(), 0x10);
         assert_eq!(result.value_brush.color().green(), 0x20);
         assert_eq!(result.value_brush.color().blue(), 0x30);
@@ -983,7 +1021,193 @@ export component Test { in property <Foobar> test1; }"#,
             r#"export component Test { in property <color> test1: Colors.red; }"#,
             0,
         );
+        assert_eq!(result.kind, ui::PropertyValueKind::Color);
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        // assert_eq!(result.value_string, "Colors.red");
+        assert_eq!(result.value_brush.color().red(), 0xff);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0x00);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"export component Test { in property <color> test1: red; }"#,
+            0,
+        );
+        assert_eq!(result.kind, ui::PropertyValueKind::Color);
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        // assert_eq!(result.value_string, "Colors.red");
+        assert_eq!(result.value_brush.color().red(), 0xff);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0x00);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"global Foo {
+                out property <color> red: blue;
+            }
+            export component Test { in property <color> test1: Foo.red; }"#,
+            3,
+        );
+        assert_eq!(result.kind, ui::PropertyValueKind::Color);
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.red");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"struct Bar {
+                foo: color,
+            }
+            global Foo {
+                out property <Bar> s: { foo: Colors.blue };
+            }
+            export component Test { in property <color> test1: Foo.s.foo; }"#,
+            6,
+        );
+        eprintln!("Result => {result:?}");
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.s.foo");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"struct Bar {
+                bar: color,
+            }
+            struct Baz {
+                baz: Bar,
+            }
+            global Foo {
+                out property <Baz> s: { baz: { bar: Colors.blue } };
+            }
+            export component Test { in property <color> test1: Foo.s.baz.bar; }"#,
+            9,
+        );
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.s.baz.bar");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"struct Bar {
+                bar: color,
+            }
+            struct Baz {
+                baz: Bar,
+            }
+            global Foo2 {
+                out property <Baz> test: Foo.s;
+            }
+            global Foo {
+                out property <Baz> s: { baz: { bar: Colors.blue } };
+            }
+            export component Test { in property <color> test1: Foo.s.baz.bar; }"#,
+            12,
+        );
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.s.baz.bar");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"struct Bar {
+                bar: color,
+            }
+            struct Baz {
+                baz: Bar,
+            }
+            global Foo2 {
+                in property <int> index;
+                out property <Baz> test: index == 0 ? Foo.s : FooBar.s;
+            }
+            global Foo {
+                out property <Baz> s: { baz: { bar: Colors.blue } };
+            }
+            global FooBar {
+                out property <Baz> s: { baz: { bar: Colors.green } };
+            }
+            export component Test { in property <color> test1: Foo.s.baz.bar; }"#,
+            16,
+        );
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.s.baz.bar");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"export component Test {
+            in property <int> foo;
+            in property <color> test1: foo == 0 ? red : blue;
+            }"#,
+            2,
+        );
         assert_eq!(result.kind, ui::PropertyValueKind::Code);
+
+        let result = property_conversion_test(
+            r#"global Foo {
+                in property <int> foo;
+                out property <color> red: foo == 0 ? blue : red;
+            }
+            export component Test { in property <color> test1: Foo.red; }"#,
+            4,
+        );
+        assert_eq!(result.kind, ui::PropertyValueKind::Color);
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.red");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"struct Bar {
+                foo: color,
+            }
+            global Foo {
+                in property <int> foo;
+                out property <Bar> s: foo == 0 ? { foo: Colors.blue } : { foo: Colors.red };
+            }
+            export component Test { in property <color> test1: Foo.s.foo; }"#,
+            7,
+        );
+        eprintln!("Result => {result:?}");
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.s.foo");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
+
+        let result = property_conversion_test(
+            r#"struct Bar {
+                bar: color,
+            }
+            struct Baz {
+                baz: Bar,
+            }
+            global Foo {
+                in property <int> foo;
+                out property <Baz> s: foo == 0 ? { baz: { bar: Colors.blue } } : { baz: { bar: Colors.blue } };
+            }
+            export component Test { in property <color> test1: Foo.s.baz.bar; }"#,
+            10,
+        );
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Foo.s.baz.bar");
+        assert_eq!(result.value_brush.color().red(), 0x00);
+        assert_eq!(result.value_brush.color().green(), 0x00);
+        assert_eq!(result.value_brush.color().blue(), 0xff);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
     }
 
     #[test]
@@ -992,6 +1216,7 @@ export component Test { in property <Foobar> test1; }"#,
             property_conversion_test(r#"export component Test { in property <brush> test1; }"#, 0);
         assert_eq!(result.kind, ui::PropertyValueKind::Brush);
         assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert!(result.value_string.is_empty());
         assert_eq!(result.value_brush.color().red(), 0);
         assert_eq!(result.value_brush.color().green(), 0);
         assert_eq!(result.value_brush.color().blue(), 0);
@@ -1003,6 +1228,7 @@ export component Test { in property <Foobar> test1; }"#,
         );
         assert_eq!(result.kind, ui::PropertyValueKind::Brush);
         assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert!(result.value_string.is_empty());
         assert_eq!(result.value_brush.color().red(), 0x10);
         assert_eq!(result.value_brush.color().green(), 0x20);
         assert_eq!(result.value_brush.color().blue(), 0x30);
@@ -1018,7 +1244,13 @@ export component Test { in property <Foobar> test1; }"#,
             r#"export component Test { in property <brush> test1: Colors.red; }"#,
             0,
         );
-        assert_eq!(result.kind, ui::PropertyValueKind::Code);
+        assert_eq!(result.kind, ui::PropertyValueKind::Brush);
+        assert!(matches!(result.value_brush, slint::Brush::SolidColor(_)));
+        assert_eq!(result.value_string, "Colors.red");
+        assert_eq!(result.value_brush.color().red(), 0xff);
+        assert_eq!(result.value_brush.color().green(), 0);
+        assert_eq!(result.value_brush.color().blue(), 0);
+        assert_eq!(result.value_brush.color().alpha(), 0xff);
 
         let result = property_conversion_test(
             r#"export component Test { in property <brush> test1: @linear-gradient(90deg, #3f87a6 0%, #ebf8e1 50%, #f69d3c 100%); }"#,

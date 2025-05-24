@@ -1,6 +1,17 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
-import { Api, PropertyValueTable, BrushKind, ColorData, ElementInformation, GradientStop, PropertyInformation, PropertyValue, PropertyValueKind, PreviewData  } from "./api.slint";
+import {
+    Api,
+    PropertyValueTable,
+    BrushKind,
+    ColorData,
+    ElementInformation,
+    GradientStop,
+    PropertyInformation,
+    PropertyValue,
+    PropertyValueKind,
+    PreviewData,
+} from "./api.slint";
 import { StatusLineApi } from "components/status-line.slint";
 
 export global WindowGlobal {
@@ -9,6 +20,13 @@ export global WindowGlobal {
 }
 
 export enum WidgetMode { edit, preview, color-stop }
+
+export enum PickerTab {
+    color,
+    gradient,
+    svg-color,
+    globals
+}
 
 // Color and Brush properties are related, but while a <brush> can be a color,
 // a <color> property cannot be a brush. This property type is used to ensure
@@ -62,7 +80,6 @@ export global TableData {
     }
 }
 
-
 export global PickerData {
     in-out property <float> hue;
     in-out property <float> saturation;
@@ -79,9 +96,9 @@ export global PickerData {
     in-out property <int> current-stop-index: 0;
     property <float> current-stop-position: current-gradient-stops[current-stop-index].position;
     property <color> current-stop-color: current-gradient-stops[current-stop-index].color;
+    in-out property <PickerTab> active-tab: PickerTab.color;
 
     callback rebuild-gradient-stops();
-
 
     changed current-stop-index => {
         update-brush();
@@ -123,6 +140,10 @@ export global PickerData {
         WindowManager.update-brush-preview();
     }
 
+    changed active-tab => {
+        WindowManager.hide-color-stop-picker();
+    }
+
     rebuild-gradient-stops => {
         current-gradient-stops = Api.clone-gradient-stops(current-gradient-stops);
         update-brush();
@@ -139,7 +160,6 @@ export global PickerData {
     public function update-brush() {
         self.current-brush = Api.create-brush(current-brush-kind, current-angle, current-color, current-gradient-stops);
     }
-
 }
 
 export global WindowManager {
@@ -168,17 +188,39 @@ export global WindowManager {
     callback show-color-stop-picker();
     callback hide-color-stop-picker();
 
+    function set-default-color() {
+        if Api.recent-colors.length > 0 {
+            PickerData.hue = Api.recent-colors[0].to-hsv().hue;
+            PickerData.saturation = Api.recent-colors[0].to-hsv().saturation;
+            PickerData.value = Api.recent-colors[0].to-hsv().value;
+            PickerData.alpha = Api.recent-colors[0].to-hsv().alpha * 100;
+        } else {
+            PickerData.hue = 220;
+            PickerData.saturation = 0.5;
+            PickerData.value = 0.5;
+            PickerData.alpha = 100;
+        }
+    }
+
+    function set-active-tab(brush-mode: BrushMode) {
+        if brush-mode == BrushMode.color {
+            PickerData.active-tab = PickerTab.color;
+        } else if brush-mode == BrushMode.linear {
+            PickerData.active-tab = PickerTab.gradient;
+        } else if brush-mode == BrushMode.radial {
+            PickerData.active-tab = PickerTab.gradient;
+        }
+    }
+
     show-floating-widget(property-information, element-information) => {
         widget-mode = WidgetMode.edit;
         current-property-information = property-information;
         current-element-information = element-information;
+
         if current-property-information.value.kind == PropertyValueKind.color {
             // if there is no color set create a new useful one
             if current-property-information.value.code == "" {
-                PickerData.hue = 220;
-                PickerData.saturation = 0.5;
-                PickerData.value = 0.5;
-                PickerData.alpha = 100;
+                set-default-color();
             } else {
                 PickerData.hue = current-property-information.value.value-brush.to-hsv().hue;
                 PickerData.saturation = current-property-information.value.value-brush.to-hsv().saturation;
@@ -198,10 +240,7 @@ export global WindowManager {
             if current-property-information.value.brush-kind == BrushKind.solid {
                 // if there is no color set create a new useful one
                 if current-property-information.value.code == "" {
-                    PickerData.hue = 220;
-                    PickerData.saturation = 0.5;
-                    PickerData.value = 0.5;
-                    PickerData.alpha = 100;
+                    set-default-color();
                 } else {
                     PickerData.hue = current-property-information.value.value-brush.to-hsv().hue;
                     PickerData.saturation = current-property-information.value.value-brush.to-hsv().saturation;
@@ -216,6 +255,7 @@ export global WindowManager {
             }
             showing-color-picker = true;
         }
+        set-active-tab(brush-mode);
         PickerData.update-brush();
     }
 
@@ -228,6 +268,7 @@ export global WindowManager {
         widget-mode = WidgetMode.edit;
         picker-mode = BrushPropertyType.color;
         brush-mode = BrushMode.color;
+        PickerData.active-tab = PickerTab.color;
     }
 
     show-floating-preview-widget(property-container-id, preview-data, property-value) => {
@@ -242,7 +283,7 @@ export global WindowManager {
 
         if property-value.kind == PropertyValueKind.color {
             picker-mode = BrushPropertyType.color;
-
+            PickerData.active-tab = PickerTab.color;
             showing-color-picker = true;
         }
         if property-value.kind == PropertyValueKind.brush {
@@ -250,9 +291,12 @@ export global WindowManager {
 
             if property-value.brush-kind == BrushKind.solid {
                 brush-mode = BrushMode.color;
+                PickerData.active-tab = PickerTab.color;
             } else if property-value.brush-kind == BrushKind.linear {
                 brush-mode = BrushMode.linear;
+                PickerData.active-tab = PickerTab.gradient;
             } else if property-value.brush-kind == BrushKind.radial {
+                PickerData.active-tab = PickerTab.gradient;
                 brush-mode = BrushMode.radial;
             }
             PickerData.current-gradient-stops = property-value.gradient-stops;
