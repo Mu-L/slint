@@ -58,6 +58,7 @@ use std::path::Path;
 use i_slint_compiler::diagnostics::BuildDiagnostics;
 
 /// The structure for configuring aspects of the compilation of `.slint` markup files to Rust.
+#[derive(Clone)]
 pub struct CompilerConfiguration {
     config: i_slint_compiler::CompilerConfiguration,
 }
@@ -187,6 +188,18 @@ impl CompilerConfiguration {
     ) -> CompilerConfiguration {
         let mut config = self.config;
         config.translation_path_bundle = Some(path.into());
+        Self { config }
+    }
+
+    /// Configures the compiler to emit additional debug info when compiling Slint code.
+    ///
+    /// This is the equivalent to setting `SLINT_EMIT_DEBUG_INFO=1` and using the `slint!()` macro
+    /// and is primarily used by `i-slint-backend-testing`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_debug_info(self, enable: bool) -> Self {
+        let mut config = self.config;
+        config.debug_info = enable;
         Self { config }
     }
 

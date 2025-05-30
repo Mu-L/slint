@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 use dynamic_type::{Instance, InstanceBox};
 use i_slint_compiler::expression_tree::{Expression, NamedReference};
 use i_slint_compiler::langtype::Type;
-use i_slint_compiler::object_tree::ElementRc;
+use i_slint_compiler::object_tree::{ElementRc, TransitionDirection};
 use i_slint_compiler::{diagnostics::BuildDiagnostics, object_tree::PropertyDeclaration};
 use i_slint_compiler::{generator, object_tree, parser, CompilerConfiguration};
 use i_slint_core::accessibility::{
@@ -510,7 +510,7 @@ impl ItemTreeDescription<'_> {
     > {
         let g = self.compiled_globals.as_ref().expect("Root component should have globals");
         g.exported_globals_by_name
-            .get(crate::normalize_identifier(name).as_ref())
+            .get(&crate::normalize_identifier(name))
             .and_then(|global_idx| g.compiled_globals.get(*global_idx))
             .map(|global| internal_properties_to_public(global.public_properties()))
     }
@@ -1420,16 +1420,22 @@ pub fn animation_for_property(
                     let state = eval::eval_expression(&state_ref, &mut context);
                     let state_info: i_slint_core::properties::StateInfo = state.try_into().unwrap();
                     for a in &animations {
-                        if (a.is_out && a.state_id == state_info.previous_state)
-                            || (!a.is_out && a.state_id == state_info.current_state)
-                        {
-                            return (
-                                eval::new_struct_with_bindings(
-                                    &a.animation.borrow().bindings,
-                                    &mut context,
-                                ),
-                                state_info.change_time,
-                            );
+                        let is_previous_state = a.state_id == state_info.previous_state;
+                        let is_current_state = a.state_id == state_info.current_state;
+                        match (a.direction, is_previous_state, is_current_state) {
+                            (TransitionDirection::In, false, true)
+                            | (TransitionDirection::Out, true, false)
+                            | (TransitionDirection::InOut, false, true)
+                            | (TransitionDirection::InOut, true, false) => {
+                                return (
+                                    eval::new_struct_with_bindings(
+                                        &a.animation.borrow().bindings,
+                                        &mut context,
+                                    ),
+                                    state_info.change_time,
+                                );
+                            }
+                            _ => {}
                         }
                     }
                     Default::default()

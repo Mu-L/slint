@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::{collections::HashMap, iter::once, rc::Rc};
 
 use i_slint_compiler::parser::TextRange;
-use i_slint_compiler::{expression_tree, langtype, literals};
+use i_slint_compiler::{expression_tree, langtype};
 
 use itertools::Itertools;
 use slint::{Model, ModelRc, SharedString, ToSharedString, VecModel};
@@ -19,8 +19,10 @@ use crate::preview::{self, preview_data, properties, SelectionNotification};
 #[cfg(target_arch = "wasm32")]
 use crate::wasm_prelude::*;
 
-mod gradient;
+mod brushes;
+pub mod palette;
 mod property_view;
+mod recent_colors;
 
 slint::include_modules!();
 
@@ -110,37 +112,10 @@ pub fn create_ui(style: String, experimental: bool) -> Result<PreviewUi, Platfor
     api.on_set_json_preview_data(set_json_preview_data);
 
     api.on_string_to_code(string_to_code);
-    api.on_string_to_color(|s| string_to_color(s.as_ref()).unwrap_or_default());
-    api.on_string_is_color(|s| string_to_color(s.as_ref()).is_some());
-    api.on_color_to_data(|c| ColorData {
-        a: c.alpha() as i32,
-        r: c.red() as i32,
-        g: c.green() as i32,
-        b: c.blue() as i32,
-        text: color_to_string(c),
-        short_text: color_to_short_string(c).into(),
-    });
-    api.on_rgba_to_color(|r, g, b, a| {
-        if (0..256).contains(&r)
-            && (0..256).contains(&g)
-            && (0..256).contains(&b)
-            && (0..256).contains(&a)
-        {
-            slint::Color::from_argb_u8(a as u8, r as u8, g as u8, b as u8)
-        } else {
-            slint::Color::default()
-        }
-    });
 
-    api.on_as_json_brush(as_json_brush);
-    api.on_as_slint_brush(as_slint_brush);
-    api.on_create_brush(create_brush);
-    api.on_add_gradient_stop(gradient::add_gradient_stop);
-    api.on_remove_gradient_stop(gradient::remove_gradient_stop);
-    api.on_move_gradient_stop(gradient::move_gradient_stop);
-    api.on_suggest_gradient_stop_at_row(gradient::suggest_gradient_stop_at_row);
-    api.on_suggest_gradient_stop_at_position(gradient::suggest_gradient_stop_at_position);
-    api.on_clone_gradient_stops(gradient::clone_gradient_stops);
+    brushes::setup(&ui);
+    palette::setup(&ui);
+    recent_colors::setup(&ui);
 
     #[cfg(target_vendor = "apple")]
     api.set_control_key_name("command".into());
@@ -324,27 +299,6 @@ fn string_to_code(
     }
 }
 
-fn color_to_string(color: slint::Color) -> SharedString {
-    let a = color.alpha();
-    let r = color.red();
-    let g = color.green();
-    let b = color.blue();
-
-    slint::format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
-}
-
-fn color_to_short_string(color: slint::Color) -> String {
-    let r = color.red();
-    let g = color.green();
-    let b = color.blue();
-
-    format!("{r:02x}{g:02x}{b:02x}")
-}
-
-fn string_to_color(text: &str) -> Option<slint::Color> {
-    literals::parse_color_literal(text).map(slint::Color::from_argb_encoded)
-}
-
 fn unit_model(units: &[expression_tree::Unit]) -> ModelRc<SharedString> {
     Rc::new(VecModel::from(
         units.iter().map(|u| u.to_string().into()).collect::<Vec<SharedString>>(),
@@ -481,15 +435,16 @@ fn map_value_and_type(
         kind: PropertyValueKind,
         code: SharedString,
     ) {
-        let color_string = color_to_string(color);
+        let color_string = brushes::color_to_string(color);
         mapping.headers.push(mapping.name_prefix.clone());
         mapping.current_values.push(PropertyValue {
             kind,
             display_string: if kind == PropertyValueKind::Color {
-                color_string
+                color_string.clone()
             } else {
                 SharedString::from("Solid Color")
             },
+            value_string: color_string,
             brush_kind: BrushKind::Solid,
             value_brush: slint::Brush::SolidColor(color),
             gradient_stops: Rc::new(VecModel::from(vec![GradientStop { color, position: 0.5 }]))
@@ -817,11 +772,15 @@ fn map_value_and_type(
     };
 }
 
-fn map_preview_data_to_property_value(
-    preview_data: &preview_data::PreviewData,
+pub fn map_value_and_type_to_property_value(
+    ty: &langtype::Type,
+    value: &Option<slint_interpreter::Value>,
+    name_prefix: &str,
 ) -> Option<PropertyValue> {
-    let mut mapping = ValueMapping::default();
-    map_value_and_type(&preview_data.ty, &preview_data.value, &mut mapping);
+    let mut mapping =
+        ValueMapping { name_prefix: SharedString::from(name_prefix), ..Default::default() };
+
+    map_value_and_type(ty, value, &mut mapping);
 
     if mapping.is_too_complex
         || mapping.array_values.len() != 1
@@ -831,6 +790,12 @@ fn map_preview_data_to_property_value(
     } else {
         mapping.array_values.first().and_then(|av| av.first()).cloned()
     }
+}
+
+fn map_preview_data_to_property_value(
+    preview_data: &preview_data::PreviewData,
+) -> Option<PropertyValue> {
+    map_value_and_type_to_property_value(&preview_data.ty, &preview_data.value, "")
 }
 
 fn map_preview_data_property(
@@ -1094,7 +1059,7 @@ fn set_property_value_table(
         return "Could not process input values".into();
     };
 
-    set_json_preview_data(container, property_name, json_string.into())
+    set_json_preview_data(container, property_name, json_string.into(), false)
 }
 
 fn default_property_value(source: &PropertyValue) -> PropertyValue {
@@ -1206,7 +1171,15 @@ fn set_json_preview_data(
     container: SharedString,
     property_name: SharedString,
     json_string: SharedString,
+    send_telemetry: bool,
 ) -> SharedString {
+    if send_telemetry {
+        crate::preview::send_telemetry(&mut [(
+            "type".to_string(),
+            serde_json::to_value("data_json_changed").unwrap(),
+        )]);
+    }
+
     let property_name = (!property_name.is_empty()).then_some(property_name.to_string());
 
     let json = match serde_json::from_str::<serde_json::Value>(json_string.as_ref()) {
@@ -1288,71 +1261,6 @@ pub fn ui_set_properties(
     api.set_current_element(next_element);
 
     declarations
-}
-
-fn sorted_gradient_stops(
-    stops: ModelRc<GradientStop>,
-) -> Vec<i_slint_core::graphics::GradientStop> {
-    let mut result = stops
-        .iter()
-        .map(|gs| i_slint_core::graphics::GradientStop { position: gs.position, color: gs.color })
-        .collect::<Vec<_>>();
-    result.sort_by(|left, right| left.position.total_cmp(&right.position));
-
-    result
-}
-
-fn as_json_brush(
-    kind: BrushKind,
-    angle: f32,
-    color: slint::Color,
-    stops: ModelRc<GradientStop>,
-) -> SharedString {
-    format!("\"{}\"", as_slint_brush(kind, angle, color, stops)).into()
-}
-
-fn as_slint_brush(
-    kind: BrushKind,
-    angle: f32,
-    color: slint::Color,
-    stops: ModelRc<GradientStop>,
-) -> SharedString {
-    fn stops_as_string(stops: ModelRc<GradientStop>) -> String {
-        let stops = sorted_gradient_stops(stops);
-
-        let mut result = String::new();
-        for s in stops {
-            result += &format!(", {} {:.2}%", color_to_string(s.color), s.position * 100.0);
-        }
-        result
-    }
-
-    match kind {
-        BrushKind::Solid => color_to_string(color),
-        BrushKind::Linear => {
-            format!("@linear-gradient({angle}deg{})", stops_as_string(stops)).into()
-        }
-        BrushKind::Radial => format!("@radial-gradient(circle{})", stops_as_string(stops)).into(),
-    }
-}
-
-fn create_brush(
-    kind: BrushKind,
-    angle: f32,
-    color: slint::Color,
-    stops: ModelRc<GradientStop>,
-) -> slint::Brush {
-    let mut stops = sorted_gradient_stops(stops);
-
-    match kind {
-        BrushKind::Solid => slint::Brush::SolidColor(color),
-        BrushKind::Linear => slint::Brush::LinearGradient(
-            i_slint_core::graphics::LinearGradientBrush::new(angle, stops.drain(..)),
-        ),
-        BrushKind::Radial => slint::Brush::RadialGradient(
-            i_slint_core::graphics::RadialGradientBrush::new_circle(stops.drain(..)),
-        ),
-    }
 }
 
 #[cfg(test)]
@@ -1711,6 +1619,7 @@ export component Tester {{
             },
             super::PropertyValue {
                 display_string: "#aabbccff".into(),
+                value_string: "#aabbccff".into(),
                 code: "\"#aabbccff\"".into(),
                 kind: super::PropertyValueKind::Color,
                 value_brush: slint::Brush::SolidColor(slint::Color::from_argb_u8(
