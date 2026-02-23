@@ -45,7 +45,7 @@ jobs:
             - uses: ./.github/actions/install-linux-dependencies
             - uses: ./.github/actions/setup-rust
               with:
-                  toolchain: nightly
+                  toolchain: nightly-2026-02-21 # Pinnded because of build failure with rustdoc and resvg
                   target: aarch64-linux-android
             - name: Install apt dependencies
               run: sudo apt-get install doxygen
