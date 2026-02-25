@@ -34,9 +34,6 @@ pub fn create_ui(
     to_lsp: &Rc<dyn common::PreviewToLsp>,
     style: &str,
 ) -> Result<PreviewUi, PlatformError> {
-    #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
-    crate::preview::connector::native::init_apple_platform()?;
-
     let ui = PreviewUi::new()?;
 
     // styles:

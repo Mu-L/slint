@@ -252,17 +252,3 @@ impl common::PreviewToLsp for RemoteControlledPreviewToLsp {
         Ok(())
     }
 }
-
-// This function overrides the default app menu and makes the "Quit" item merely hide the UI,
-// as the life-cycle of this process is determined by the editor. The returned menuitem must
-// be kept alive for the duration of the event loop, as otherwise muda crashes.
-#[cfg(target_vendor = "apple")]
-pub fn init_apple_platform() -> Result<(), i_slint_core::api::PlatformError> {
-    let backend = i_slint_backend_winit::Backend::builder().with_default_menu_bar(false).build()?;
-
-    slint::platform::set_platform(Box::new(backend)).map_err(|set_platform_err| {
-        i_slint_core::api::PlatformError::from(set_platform_err.to_string())
-    })?;
-
-    Ok(())
-}
