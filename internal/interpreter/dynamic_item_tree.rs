@@ -1087,11 +1087,11 @@ fn generate_rtti() -> HashMap<&'static str, Rc<ItemRTTI>> {
             rtti_for::<DropArea>(),
             rtti_for::<ContextMenu>(),
             rtti_for::<MenuItem>(),
+            rtti_for::<SystemTrayIcon>(),
         ]
         .iter()
         .cloned(),
     );
-    rtti.extend([rtti_for::<SystemTrayIcon>()].iter().cloned());
 
     trait NativeHelper {
         fn push(rtti: &mut HashMap<&str, Rc<ItemRTTI>>);
