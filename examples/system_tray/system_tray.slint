@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: MIT
 
-import { LineEdit, CheckBox, Button, VerticalBox, HorizontalBox, GroupBox } from "std-widgets.slint";
+import { LineEdit, CheckBox, Button, VerticalBox, HorizontalBox, GroupBox, Palette } from "std-widgets.slint";
 
 // The window the user interacts with. Edits to the inputs propagate to
 // the SystemTrayIcon instance via the host language's callbacks.
@@ -85,7 +85,9 @@ export component MainWindow inherits Window {
 }
 
 export component ExampleTray inherits SystemTrayIcon {
-    icon: @image-url("favicon-white.png");
+    icon: Palette.color-scheme == ColorScheme.dark
+        ? @image-url("../../logo/slint-logo-small-dark.png")
+        : @image-url("../../logo/slint-logo-small-light.png");
 
     // Wrapping properties so the host language gets typed `set_*` / property
     // accessors. The inherited `tooltip` / `title` / `visible` from the
