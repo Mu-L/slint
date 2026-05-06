@@ -1492,6 +1492,40 @@ fn call_builtin_function(
 
             Value::Void
         }
+        BuiltinFunction::SetupSystemTrayIcon => {
+            let [
+                Expression::ElementReference(system_tray_elem),
+                Expression::ElementReference(item_tree_root),
+                rest @ ..,
+            ] = arguments
+            else {
+                panic!("internal error: incorrect argument count to SetupSystemTrayIcon")
+            };
+
+            let component = local_context.component_instance;
+            let elem = system_tray_elem.upgrade().unwrap();
+            generativity::make_guard!(guard);
+            let enclosing_component = enclosing_component_for_element(&elem, component, guard);
+            let description = enclosing_component.description;
+            let item_info = &description.items[elem.borrow().id.as_str()];
+            let item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
+            let item_tree = vtable::VRc::into_dyn(item_comp);
+            let item_rc = corelib::items::ItemRc::new(item_tree.clone(), item_info.item_index());
+
+            let menu_item_tree_component =
+                item_tree_root.upgrade().unwrap().borrow().enclosing_component.upgrade().unwrap();
+            let menu_vrc = crate::dynamic_item_tree::make_menu_item_tree(
+                &menu_item_tree_component,
+                &enclosing_component,
+                rest.first(),
+            );
+
+            let system_tray =
+                item_rc.downcast::<corelib::items::SystemTrayIcon>().expect("SystemTrayIcon item");
+            system_tray.as_pin_ref().set_menu(&item_rc, vtable::VRc::into_dyn(menu_vrc));
+
+            Value::Void
+        }
         BuiltinFunction::MonthDayCount => {
             let m: u32 = eval_expression(&arguments[0], local_context).try_into().unwrap();
             let y: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();

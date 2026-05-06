@@ -324,6 +324,7 @@ fn gen_corelib(
         "Layer",
         "ContextMenu",
         "MenuItem",
+        "SystemTrayIcon",
     ];
 
     config.export.include = [
@@ -761,6 +762,14 @@ fn gen_corelib(
         .body
         .insert("Flickable".to_owned(), "    inline Flickable(); inline ~Flickable();".into());
     config.export.pre_body.insert("FlickableDataBox".to_owned(), "struct FlickableData;".into());
+    config.export.body.insert(
+        "SystemTrayIcon".to_owned(),
+        "    inline SystemTrayIcon(); inline ~SystemTrayIcon();".into(),
+    );
+    config
+        .export
+        .pre_body
+        .insert("SystemTrayIconDataBox".to_owned(), "struct SystemTrayIconData;".into());
 
     cbindgen::Builder::new()
         .with_config(config)
